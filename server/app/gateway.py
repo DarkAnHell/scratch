@@ -208,7 +208,7 @@ def scp_send_one(conf: Config, token: str) -> None:
         logutil.warning(f"scp_send_one: token not found token={token!r}")
         sys.exit(2)
 
-    _, _, _, size_bytes, stored_path, _, expires_at = row
+    _, _, original_name, size_bytes, stored_path, _, expires_at = row
     now = utcnow()
     if now >= expires_at:
         _stderr("ERROR: token expired\n")
@@ -221,6 +221,7 @@ def scp_send_one(conf: Config, token: str) -> None:
         logutil.error(f"scp_send_one: file missing token={token!r} path={stored_path}")
         sys.exit(2)
 
+    _stderr(f"Filename: {original_name}\n")
     logutil.debug("scp_send_one: waiting for initial client ACK")
     _expect_client_ok()
 
