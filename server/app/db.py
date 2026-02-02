@@ -2,6 +2,8 @@ import os
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import psycopg
+from app import logutil
+
 
 def _dsn() -> str:
     host = os.environ["DB_HOST"]
@@ -9,14 +11,20 @@ def _dsn() -> str:
     name = os.environ["DB_NAME"]
     user = os.environ["DB_USER"]
     pw = os.environ["DB_PASSWORD"]
+    logutil.debug(f"db dsn host={host} port={port} dbname={name} user={user}")
     return f"host={host} port={port} dbname={name} user={user} password={pw}"
+
 
 @contextmanager
 def conn():
+    logutil.verbose("db connecting")
     with psycopg.connect(_dsn()) as c:
         yield c
+    logutil.verbose("db connection closed")
+
 
 def init_db() -> None:
+    logutil.info("db init schema")
     with conn() as c:
         c.execute(
             """
@@ -31,38 +39,69 @@ def init_db() -> None:
             );
             """
         )
-        c.execute("CREATE INDEX IF NOT EXISTS idx_files_expires_at ON files(expires_at);")
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_files_expires_at ON files(expires_at);"
+        )
+    logutil.debug("db init complete")
 
-def insert_file(*, token: str, sha512: str, original_name: str, size_bytes: int, stored_path: str,
-                created_at: datetime, expires_at: datetime) -> None:
+
+def insert_file(
+    *,
+    token: str,
+    sha512: str,
+    original_name: str,
+    size_bytes: int,
+    stored_path: str,
+    created_at: datetime,
+    expires_at: datetime,
+) -> None:
+    logutil.debug(
+        f"db insert token={token} size_bytes={size_bytes} name={original_name!r}"
+    )
     with conn() as c:
         c.execute(
             """
             INSERT INTO files(token, sha512, original_name, size_bytes, stored_path, created_at, expires_at)
             VALUES (%s,%s,%s,%s,%s,%s,%s)
             """,
-            (token, sha512, original_name, size_bytes, stored_path, created_at, expires_at),
+            (
+                token,
+                sha512,
+                original_name,
+                size_bytes,
+                stored_path,
+                created_at,
+                expires_at,
+            ),
         )
+    logutil.verbose("db insert complete")
+
 
 def get_file_by_token(token: str):
+    logutil.debug(f"db lookup token={token}")
     with conn() as c:
         row = c.execute(
             "SELECT token, sha512, original_name, size_bytes, stored_path, created_at, expires_at FROM files WHERE token=%s",
             (token,),
         ).fetchone()
+        logutil.verbose(f"db lookup token={token} found={row is not None}")
         return row
+
 
 def delete_expired(now: datetime) -> list[tuple[str, str]]:
     """
     Returns list of (token, stored_path) deleted from DB.
     """
+    logutil.debug(f"db delete_expired now={now.isoformat()}")
     with conn() as c:
         rows = c.execute(
             "SELECT token, stored_path FROM files WHERE expires_at <= %s",
             (now,),
         ).fetchall()
         c.execute("DELETE FROM files WHERE expires_at <= %s", (now,))
+        logutil.info(f"db delete_expired deleted={len(rows)}")
         return [(r[0], r[1]) for r in rows]
+
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)

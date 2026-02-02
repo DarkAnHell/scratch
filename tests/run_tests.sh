@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${SSH_HOST:=sshpoc}"
+: "${SSH_HOST:=sshgateway}"
 : "${SSH_PORT:=22}"
 : "${KEYS_DIR:=/keys}"
 

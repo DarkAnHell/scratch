@@ -2,7 +2,7 @@
 set -euo pipefail
 
 : "${KEYS_DIR:=/keys}"
-: "${SERVICE:=sshpoc}"
+: "${SERVICE:=sshgateway}"
 
 echo "Creating test keys in docker volume 'ssh_keys' via service ${SERVICE}..."
 

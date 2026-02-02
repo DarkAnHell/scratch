@@ -19,9 +19,9 @@ COPY entrypoint.sh /entrypoint.sh
 COPY app /srv/app
 
 RUN chmod +x /entrypoint.sh \
-    && chmod +x /srv/app/poc_gateway.py \
+    && chmod +x /srv/app/gateway.py \
     && chmod +x /srv/app/authorize_keys.sh \
-    && chmod +x /srv/app/poc_gateway_wrapper.sh
+    && chmod +x /srv/app/gateway_wrapper.sh
 
 EXPOSE 22
 ENTRYPOINT ["/entrypoint.sh"]

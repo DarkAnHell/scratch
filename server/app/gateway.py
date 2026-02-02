@@ -11,22 +11,16 @@ from datetime import timedelta
 from pathlib import Path
 
 from app.db import insert_file, get_file_by_token, utcnow
+from app import logutil
 
 ACK_OK = b"\x00"
-LOG_LEVEL = os.environ.get("POC_LOG_LEVEL", "INFO").upper()
 
-def _log(msg: str) -> None:
-    sys.stderr.write(msg + "\n")
-    sys.stderr.flush()
-
-def _dbg(msg: str) -> None:
-    if LOG_LEVEL in ("DEBUG", "TRACE"):
-        _log(f"DEBUG: {msg}")
 
 @dataclass
 class Config:
     data_dir: Path
     ttl_days: int
+
 
 def cfg() -> Config:
     data_dir = Path(os.environ.get("DATA_DIR", "/data")).resolve()
@@ -34,9 +28,11 @@ def cfg() -> Config:
     data_dir.mkdir(parents=True, exist_ok=True)
     return Config(data_dir=data_dir, ttl_days=ttl_days)
 
+
 def _stderr(msg: str) -> None:
     sys.stderr.write(msg)
     sys.stderr.flush()
+
 
 def _read_exact(n: int) -> bytes:
     buf = b""
@@ -48,15 +44,18 @@ def _read_exact(n: int) -> bytes:
         buf += chunk
     return buf
 
+
 def _read_line() -> bytes:
     line = sys.stdin.buffer.readline()
     if not line:
         raise EOFError("unexpected EOF")
     return line
 
+
 def _send_ok() -> None:
     sys.stdout.buffer.write(ACK_OK)
     sys.stdout.buffer.flush()
+
 
 def _expect_client_ok() -> None:
     b = _read_exact(1)
@@ -64,12 +63,15 @@ def _expect_client_ok() -> None:
     if b != ACK_OK:
         raise RuntimeError(f"client did not ACK OK: {b!r}")
 
+
 def _token() -> str:
     # URL-safe token, high entropy
     return secrets.token_urlsafe(32)
 
+
 def _parse_original_command() -> str:
     return os.environ.get("SSH_ORIGINAL_COMMAND", "").strip()
+
 
 def _scp_flags(cmd: str) -> set[str]:
     """
@@ -80,7 +82,7 @@ def _scp_flags(cmd: str) -> set[str]:
     try:
         parts = shlex.split(cmd)
     except ValueError:
-        _dbg(f"failed to parse SSH_ORIGINAL_COMMAND: {cmd!r}")
+        logutil.warning(f"failed to parse SSH_ORIGINAL_COMMAND: {cmd!r}")
         return flags
     for p in parts:
         if p.startswith("-") and not p.startswith("--") and len(p) > 1:
@@ -91,6 +93,7 @@ def _scp_flags(cmd: str) -> set[str]:
                 flags.add(ch)
     return flags
 
+
 def scp_receive_one(conf: Config) -> list[dict]:
     """
     Minimal scp -t receiver.
@@ -98,7 +101,7 @@ def scp_receive_one(conf: Config) -> list[dict]:
     Returns receipts for each received file.
     """
     receipts: list[dict] = []
-    _dbg("scp_receive_one: sending initial ACK")
+    logutil.debug("scp_receive_one: sending initial ACK")
     _send_ok()  # initial ack
 
     while True:
@@ -109,7 +112,7 @@ def scp_receive_one(conf: Config) -> list[dict]:
 
         if line.startswith(b"T"):
             # timestamps line: accept, ignore
-            _dbg("scp_receive_one: received T record")
+            logutil.verbose("scp_receive_one: received T record")
             _send_ok()
             continue
 
@@ -123,7 +126,9 @@ def scp_receive_one(conf: Config) -> list[dict]:
             except Exception as e:
                 raise RuntimeError(f"bad C record: {line!r} ({e})")
 
-            _dbg(f"scp_receive_one: C record mode={mode} size={size} filename={filename!r}")
+            logutil.debug(
+                f"scp_receive_one: C record mode={mode} size={size} filename={filename!r}"
+            )
             _send_ok()  # ack header
 
             token = _token()
@@ -140,7 +145,7 @@ def scp_receive_one(conf: Config) -> list[dict]:
                     f.write(chunk)
                     h.update(chunk)
                     remaining -= len(chunk)
-                    _dbg(f"scp_receive_one: remaining={remaining}")
+                    logutil.verbose(f"scp_receive_one: remaining={remaining}")
 
             # file terminator
             term = _read_exact(1)
@@ -154,7 +159,9 @@ def scp_receive_one(conf: Config) -> list[dict]:
             expires = created + timedelta(days=conf.ttl_days)
             digest = h.hexdigest()
 
-            _dbg(f"scp_receive_one: insert_file token={token} size={size} sha512={digest[:16]}...")
+            logutil.info(
+                f"scp_receive_one: insert_file token={token} size={size} sha512={digest[:16]}..."
+            )
             insert_file(
                 token=token,
                 sha512=digest,
@@ -189,35 +196,39 @@ def scp_receive_one(conf: Config) -> list[dict]:
 
     return receipts
 
+
 def scp_send_one(conf: Config, token: str) -> None:
     """
     Minimal scp -f sender for a single token.
     """
-    _dbg(f"scp_send_one: lookup token={token!r}")
+    logutil.debug(f"scp_send_one: lookup token={token!r}")
     row = get_file_by_token(token)
     if not row:
         _stderr("ERROR: token not found\n")
+        logutil.warning(f"scp_send_one: token not found token={token!r}")
         sys.exit(2)
 
-    _, sha512, original_name, size_bytes, stored_path, _, expires_at = row
+    _, _, _, size_bytes, stored_path, _, expires_at = row
     now = utcnow()
     if now >= expires_at:
         _stderr("ERROR: token expired\n")
+        logutil.info(f"scp_send_one: token expired token={token!r}")
         sys.exit(2)
 
     path = Path(stored_path)
     if not path.exists():
         _stderr("ERROR: file missing on disk\n")
+        logutil.error(f"scp_send_one: file missing token={token!r} path={stored_path}")
         sys.exit(2)
 
-    _dbg("scp_send_one: waiting for initial client ACK")
+    logutil.debug("scp_send_one: waiting for initial client ACK")
     _expect_client_ok()
 
     header = f"C0644 {size_bytes} {token}\n".encode("utf-8")
     sys.stdout.buffer.write(header)
     sys.stdout.buffer.flush()
 
-    _dbg("scp_send_one: waiting for client ACK after header")
+    logutil.debug("scp_send_one: waiting for client ACK after header")
     _expect_client_ok()
 
     with open(path, "rb") as f:
@@ -229,19 +240,22 @@ def scp_send_one(conf: Config, token: str) -> None:
     sys.stdout.buffer.write(ACK_OK)
     sys.stdout.buffer.flush()
 
-    _dbg("scp_send_one: waiting for final client ACK")
+    logutil.debug("scp_send_one: waiting for final client ACK")
     _expect_client_ok()
+
 
 def main() -> None:
     if len(sys.argv) != 2 or sys.argv[1] not in ("put", "get"):
-        _stderr("FATAL: usage: poc_gateway.py [put|get]\n")
+        _stderr("FATAL: usage: gateway.py [put|get]\n")
         sys.exit(2)
 
     mode = sys.argv[1]
     conf = cfg()
     cmd = _parse_original_command()
     flags = _scp_flags(cmd)
-    _log(f"INFO: mode={mode} cmd={cmd!r} flags={''.join(sorted(flags)) or '-'} data_dir={conf.data_dir}")
+    logutil.info(
+        f"mode={mode} cmd={cmd!r} flags={''.join(sorted(flags)) or '-'} data_dir={conf.data_dir}"
+    )
 
     if mode == "put":
         if "t" not in flags:
@@ -250,8 +264,8 @@ def main() -> None:
         try:
             receipts = scp_receive_one(conf)
         except Exception as e:
-            _log(f"ERROR: upload failed: {e!r}")
-            _dbg(traceback.format_exc())
+            logutil.error(f"upload failed: {e!r}")
+            logutil.debug(traceback.format_exc())
             _stderr(f"ERROR: upload failed: {e}\n")
             sys.exit(1)
 
@@ -260,7 +274,6 @@ def main() -> None:
             _stderr(
                 "RECEIPT\n"
                 f"token={r['token']}\n"
-                f"sha512={r['sha512']}\n"
                 f"expires_at={r['expires_at']}\n"
             )
         sys.exit(0)
@@ -274,18 +287,20 @@ def main() -> None:
         parts = cmd.split()
         if len(parts) < 3:
             _stderr("ERROR: missing token\n")
+            logutil.warning(f"download failed: missing token cmd={cmd!r}")
             sys.exit(2)
         token = parts[-1].strip()
 
         try:
             scp_send_one(conf, token)
         except Exception as e:
-            _log(f"ERROR: download failed: {e!r}")
-            _dbg(traceback.format_exc())
+            logutil.error(f"download failed: {e!r}")
+            logutil.debug(traceback.format_exc())
             _stderr(f"ERROR: download failed: {e}\n")
             sys.exit(1)
 
         sys.exit(0)
+
 
 if __name__ == "__main__":
     main()

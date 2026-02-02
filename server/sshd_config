@@ -15,7 +15,6 @@ PermitTunnel no
 PermitTTY no
 GatewayPorts no
 
-LogLevel DEBUG3
 Subsystem sftp internal-sftp
 
 AuthorizedKeysFile .ssh/authorized_keys
@@ -29,11 +28,11 @@ ClientAliveCountMax 2
 
 # Two users with forced command gateway
 Match User put
-    ForceCommand /srv/app/poc_gateway_wrapper.sh put
+    ForceCommand /srv/app/gateway_wrapper.sh put
     PermitTTY no
     AllowTcpForwarding no
 
 Match User get
-    ForceCommand /srv/app/poc_gateway_wrapper.sh get
+    ForceCommand /srv/app/gateway_wrapper.sh get
     PermitTTY no
     AllowTcpForwarding no

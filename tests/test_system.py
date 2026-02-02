@@ -4,20 +4,25 @@ import subprocess
 import hashlib
 from datetime import datetime, timezone
 
-SSH_HOST = os.environ.get("SSH_HOST", "sshpoc")
+SSH_HOST = os.environ.get("SSH_HOST", "sshgateway")
 SSH_PORT = os.environ.get("SSH_PORT", "22")
 KEYS_DIR = os.environ.get("KEYS_DIR", "/keys")
 
 COMMON_OPTS = [
-    "-o", "StrictHostKeyChecking=no",
-    "-o", "UserKnownHostsFile=/dev/null",
-    "-o", "LogLevel=ERROR",
-    "-P", str(SSH_PORT),
+    "-o",
+    "StrictHostKeyChecking=no",
+    "-o",
+    "UserKnownHostsFile=/dev/null",
+    "-o",
+    "LogLevel=ERROR",
+    "-P",
+    str(SSH_PORT),
 ]
 
 RE_TOKEN = re.compile(r"^token=(.+)$", re.M)
 RE_SHA = re.compile(r"^sha512=([0-9a-f]{128})$", re.M)
 RE_EXPIRES = re.compile(r"^expires_at=(.+)$", re.M)
+
 
 def run(cmd, *, check=True, capture=True):
     return subprocess.run(
@@ -27,6 +32,7 @@ def run(cmd, *, check=True, capture=True):
         stdout=subprocess.PIPE if capture else None,
         stderr=subprocess.PIPE if capture else None,
     )
+
 
 def sha512_file(path: str) -> str:
     h = hashlib.sha512()
@@ -38,21 +44,26 @@ def sha512_file(path: str) -> str:
             h.update(b)
     return h.hexdigest()
 
+
 def test_put_then_get_roundtrip(tmp_path):
     src = tmp_path / "hello.txt"
-    src.write_text("hello poc\n", encoding="utf-8")
+    src.write_text("hello world\n", encoding="utf-8")
     expected_sha = sha512_file(str(src))
 
     put_key = os.path.join(KEYS_DIR, "put")
     get_key = os.path.join(KEYS_DIR, "get")
 
     # Upload
-    p = run([
-        "scp", *COMMON_OPTS,
-        "-i", put_key,
-        str(src),
-        f"put@{SSH_HOST}:/",
-    ])
+    p = run(
+        [
+            "scp",
+            *COMMON_OPTS,
+            "-i",
+            put_key,
+            str(src),
+            f"put@{SSH_HOST}:/",
+        ]
+    )
 
     # Receipt is on stderr
     m_tok = RE_TOKEN.search(p.stderr or "")
@@ -76,22 +87,29 @@ def test_put_then_get_roundtrip(tmp_path):
 
     # Download
     dst = tmp_path / "out.txt"
-    run([
-        "scp", *COMMON_OPTS,
-        "-i", get_key,
-        f"get@{SSH_HOST}:{token}",
-        str(dst),
-    ])
+    run(
+        [
+            "scp",
+            *COMMON_OPTS,
+            "-i",
+            get_key,
+            f"get@{SSH_HOST}:{token}",
+            str(dst),
+        ]
+    )
 
     assert dst.read_bytes() == src.read_bytes()
+
 
 def test_invalid_token_fails(tmp_path):
     get_key = os.path.join(KEYS_DIR, "get")
     dst = tmp_path / "nope.bin"
     r = subprocess.run(
         [
-            "scp", *COMMON_OPTS,
-            "-i", get_key,
+            "scp",
+            *COMMON_OPTS,
+            "-i",
+            get_key,
             f"get@{SSH_HOST}:does-not-exist",
             str(dst),
         ],

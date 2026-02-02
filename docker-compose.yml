@@ -2,29 +2,30 @@ services:
   db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-poc}
-      POSTGRES_USER: ${POSTGRES_USER:-poc}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-poc}
+      POSTGRES_DB: ${POSTGRES_DB:-app}
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app}
     volumes:
       - db_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-poc} -d ${POSTGRES_DB:-poc}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-app} -d ${POSTGRES_DB:-app}"]
       interval: 2s
       timeout: 3s
       retries: 30
 
-  sshpoc:
+  sshgateway:
     build: ./server
     environment:
       DATA_DIR: /data
       TTL_DAYS: ${TTL_DAYS:-7}
       DB_HOST: db
       DB_PORT: 5432
-      DB_NAME: ${POSTGRES_DB:-poc}
-      DB_USER: ${POSTGRES_USER:-poc}
-      DB_PASSWORD: ${POSTGRES_PASSWORD:-poc}
+      DB_NAME: ${POSTGRES_DB:-app}
+      DB_USER: ${POSTGRES_USER:-app}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-app}
       SSH_LISTEN_PORT: 22
       SSHD_LOG_LEVEL: INFO
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
       # Where to read public keys from (mounted volume)
       KEYS_DIR: /keys
     depends_on:
@@ -50,10 +51,11 @@ services:
       TTL_DAYS: ${TTL_DAYS:-7}
       DB_HOST: db
       DB_PORT: 5432
-      DB_NAME: ${POSTGRES_DB:-poc}
-      DB_USER: ${POSTGRES_USER:-poc}
-      DB_PASSWORD: ${POSTGRES_PASSWORD:-poc}
+      DB_NAME: ${POSTGRES_DB:-app}
+      DB_USER: ${POSTGRES_USER:-app}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-app}
       CLEAN_INTERVAL_SECONDS: ${CLEAN_INTERVAL_SECONDS:-60}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
     depends_on:
       db:
         condition: service_healthy

@@ -2,12 +2,44 @@
 set -euo pipefail
 
 : "${KEYS_DIR:=/keys}"
-: "${SERVICE:=sshpoc}"
+: "${SERVICE:=sshgateway}"
+: "${LOG_LEVEL:=INFO}"
 
-echo "Creating test keys in docker volume 'ssh_keys' via service ${SERVICE}..."
+log_level_num() {
+  case "${1}" in
+    ERROR) echo 0 ;;
+    WARNING|WARN) echo 1 ;;
+    INFO) echo 2 ;;
+    DEBUG) echo 3 ;;
+    VERBOSE|TRACE) echo 4 ;;
+    *) echo 2 ;;
+  esac
+}
+
+should_log() {
+  [ "$(log_level_num "${1}")" -le "$(log_level_num "${LOG_LEVEL}")" ]
+}
+
+log() {
+  level="${1}"
+  shift
+  if should_log "${level}"; then
+    ts="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+    echo "${level} ${ts} $*" >&2
+  fi
+}
+
+log_error() { log ERROR "$*"; }
+log_warn() { log WARNING "$*"; }
+log_info() { log INFO "$*"; }
+log_debug() { log DEBUG "$*"; }
+log_verbose() { log VERBOSE "$*"; }
+
+log_info "creating test keys in docker volume 'ssh_keys' via service ${SERVICE}"
 
 docker compose run --rm --no-deps \
   -e KEYS_DIR="${KEYS_DIR}" \
+  -e LOG_LEVEL="${LOG_LEVEL}" \
   --entrypoint /bin/sh \
   "${SERVICE}" \
   -c 'set -euo pipefail
