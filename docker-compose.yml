@@ -1,0 +1,68 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-poc}
+      POSTGRES_USER: ${POSTGRES_USER:-poc}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-poc}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-poc} -d ${POSTGRES_DB:-poc}"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  sshpoc:
+    build: ./server
+    environment:
+      DATA_DIR: /data
+      TTL_DAYS: ${TTL_DAYS:-7}
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB:-poc}
+      DB_USER: ${POSTGRES_USER:-poc}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-poc}
+      SSH_LISTEN_PORT: 22
+      SSHD_LOG_LEVEL: INFO
+      # Where to read public keys from (mounted volume)
+      KEYS_DIR: /keys
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${SSH_PORT_HOST:-2222}:22"
+    volumes:
+      - type: bind
+        source: ${STORAGE_PATH:-./storage}
+        target: /data
+      - ssh_keys:/keys
+    healthcheck:
+      test: ["CMD-SHELL", "ssh -o BatchMode=yes -o StrictHostKeyChecking=no -p 22 put@127.0.0.1 true || exit 1"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  cleaner:
+    build: ./server
+    environment:
+      DATA_DIR: /data
+      TTL_DAYS: ${TTL_DAYS:-7}
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB:-poc}
+      DB_USER: ${POSTGRES_USER:-poc}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-poc}
+      CLEAN_INTERVAL_SECONDS: ${CLEAN_INTERVAL_SECONDS:-60}
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - type: bind
+        source: ${STORAGE_PATH:-./storage}
+        target: /data
+    command: ["python", "-m", "app.cleanup"]
+
+volumes:
+  db_data:
+  ssh_keys:

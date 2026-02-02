@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${KEYS_DIR:=/keys}"
+: "${SERVICE:=sshpoc}"
+
+echo "Creating test keys in docker volume 'ssh_keys' via service ${SERVICE}..."
+
+docker compose run --rm --no-deps \
+  -e KEYS_DIR="${KEYS_DIR}" \
+  --entrypoint /bin/sh \
+  "${SERVICE}" \
+  -c 'set -euo pipefail
+mkdir -p "$KEYS_DIR"
+umask 077
+if [ ! -f "$KEYS_DIR/put" ]; then
+  ssh-keygen -t ed25519 -N "" -f "$KEYS_DIR/put" >/dev/null
+fi
+if [ ! -f "$KEYS_DIR/get" ]; then
+  ssh-keygen -t ed25519 -N "" -f "$KEYS_DIR/get" >/dev/null
+fi
+chmod 600 "$KEYS_DIR/put" "$KEYS_DIR/get"
+chmod 644 "$KEYS_DIR/put.pub" "$KEYS_DIR/get.pub"
+echo "Keys ready: $KEYS_DIR/put(.pub), $KEYS_DIR/get(.pub)"
+'

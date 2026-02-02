@@ -1,0 +1,13 @@
+services:
+  tests:
+    build: ./tests
+    environment:
+      SSH_HOST: sshpoc
+      SSH_PORT: 22
+      KEYS_DIR: /keys
+    depends_on:
+      sshpoc:
+        condition: service_healthy
+    volumes:
+      - ssh_keys:/keys
+    command: ["/bin/sh", "/app/run_tests.sh"]

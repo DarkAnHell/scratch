@@ -1,0 +1,39 @@
+Port 22
+Protocol 2
+HostKey /etc/ssh/ssh_host_ed25519_key
+HostKey /etc/ssh/ssh_host_rsa_key
+
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+ChallengeResponseAuthentication no
+PermitRootLogin no
+
+AllowAgentForwarding no
+AllowTcpForwarding no
+X11Forwarding no
+PermitTunnel no
+PermitTTY no
+GatewayPorts no
+
+LogLevel DEBUG3
+Subsystem sftp internal-sftp
+
+AuthorizedKeysFile .ssh/authorized_keys
+AuthorizedKeysCommand /srv/app/authorize_keys.sh %u %t %k
+AuthorizedKeysCommandUser root
+
+# Hard limit surface area
+MaxAuthTries 3
+ClientAliveInterval 60
+ClientAliveCountMax 2
+
+# Two users with forced command gateway
+Match User put
+    ForceCommand /srv/app/poc_gateway_wrapper.sh put
+    PermitTTY no
+    AllowTcpForwarding no
+
+Match User get
+    ForceCommand /srv/app/poc_gateway_wrapper.sh get
+    PermitTTY no
+    AllowTcpForwarding no
