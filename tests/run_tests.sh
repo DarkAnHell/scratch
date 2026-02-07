@@ -7,19 +7,19 @@ set -euo pipefail
 
 mkdir -p "${KEYS_DIR}"
 
-# Generate keys for put/get
-if [ ! -f "${KEYS_DIR}/put" ]; then
-  ssh-keygen -t ed25519 -N "" -f "${KEYS_DIR}/put" >/dev/null
-fi
-if [ ! -f "${KEYS_DIR}/get" ]; then
-  ssh-keygen -t ed25519 -N "" -f "${KEYS_DIR}/get" >/dev/null
-fi
+generate_key() {
+  name="$1"
+  if [ ! -f "${KEYS_DIR}/${name}" ]; then
+    ssh-keygen -t ed25519 -N "" -f "${KEYS_DIR}/${name}" >/dev/null
+  fi
+}
 
-cp -f "${KEYS_DIR}/put.pub" "${KEYS_DIR}/put.pub"
-cp -f "${KEYS_DIR}/get.pub" "${KEYS_DIR}/get.pub"
+# Generate keys for put/get.
+generate_key "put"
+generate_key "get"
 
 # Wait for SSH to accept connections
-for i in $(seq 1 60); do
+for _ in {1..60}; do
   if nc -z "${SSH_HOST}" "${SSH_PORT}"; then
     break
   fi

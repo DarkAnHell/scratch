@@ -45,12 +45,14 @@ docker compose run --rm --no-deps \
   -c 'set -euo pipefail
 mkdir -p "$KEYS_DIR"
 umask 077
-if [ ! -f "$KEYS_DIR/put" ]; then
-  ssh-keygen -t ed25519 -N "" -f "$KEYS_DIR/put" >/dev/null
-fi
-if [ ! -f "$KEYS_DIR/get" ]; then
-  ssh-keygen -t ed25519 -N "" -f "$KEYS_DIR/get" >/dev/null
-fi
+generate_key() {
+  name="$1"
+  if [ ! -f "$KEYS_DIR/$name" ]; then
+    ssh-keygen -t ed25519 -N "" -f "$KEYS_DIR/$name" >/dev/null
+  fi
+}
+generate_key "put"
+generate_key "get"
 chmod 600 "$KEYS_DIR/put" "$KEYS_DIR/get"
 chmod 644 "$KEYS_DIR/put.pub" "$KEYS_DIR/get.pub"
 echo "Keys ready: $KEYS_DIR/put(.pub), $KEYS_DIR/get(.pub)"

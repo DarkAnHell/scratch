@@ -1,22 +1,25 @@
+from __future__ import annotations
+
 import os
 import sys
 from datetime import datetime, timezone
+from typing import Final
 
-_LEVELS = {
+_LEVELS: Final[dict[str, int]] = {
     "ERROR": 0,
     "WARNING": 1,
     "INFO": 2,
     "DEBUG": 3,
     "VERBOSE": 4,
 }
-_ALIASES = {
+_ALIASES: Final[dict[str, str]] = {
     "WARN": "WARNING",
     "ERR": "ERROR",
     "TRACE": "VERBOSE",
 }
-_DEFAULT_LEVEL = "INFO"
-_CURRENT_LEVEL = None
-_LEVEL_SOURCE = None
+_DEFAULT_LEVEL: Final[str] = "INFO"
+_CURRENT_LEVEL: int | None = None
+_LEVEL_SOURCE: str | None = None
 
 
 def _sink_path() -> str | None:

@@ -1,32 +1,35 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
+import hashlib
 import os
-import re
+import secrets
 import shlex
 import sys
 import traceback
-import secrets
-import hashlib
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
+from typing import Iterable
 
-from app.db import insert_file, get_file_by_token, utcnow
 from app import logutil
+from app.db import get_file_by_token, insert_file, utcnow
 
 ACK_OK = b"\x00"
+MAX_CHUNK_SIZE = 1024 * 1024
 
 
-@dataclass
+@dataclass(frozen=True)
 class Config:
     data_dir: Path
     ttl_days: int
 
-
-def cfg() -> Config:
-    data_dir = Path(os.environ.get("DATA_DIR", "/data")).resolve()
-    ttl_days = int(os.environ.get("TTL_DAYS", "7"))
-    data_dir.mkdir(parents=True, exist_ok=True)
-    return Config(data_dir=data_dir, ttl_days=ttl_days)
+    @classmethod
+    def from_env(cls) -> "Config":
+        data_dir = Path(os.environ.get("DATA_DIR", "/data")).resolve()
+        ttl_days = int(os.environ.get("TTL_DAYS", "7"))
+        data_dir.mkdir(parents=True, exist_ok=True)
+        return cls(data_dir=data_dir, ttl_days=ttl_days)
 
 
 def _stderr(msg: str) -> None:
@@ -35,17 +38,19 @@ def _stderr(msg: str) -> None:
 
 
 def _read_exact(n: int) -> bytes:
-    buf = b""
+    # Read exactly n bytes from stdin (scp protocol).
+    buf = bytearray()
     r = sys.stdin.buffer
     while len(buf) < n:
         chunk = r.read(n - len(buf))
         if not chunk:
             raise EOFError("unexpected EOF")
-        buf += chunk
-    return buf
+        buf.extend(chunk)
+    return bytes(buf)
 
 
 def _read_line() -> bytes:
+    # scp control records are line-delimited.
     line = sys.stdin.buffer.readline()
     if not line:
         raise EOFError("unexpected EOF")
@@ -53,6 +58,7 @@ def _read_line() -> bytes:
 
 
 def _send_ok() -> None:
+    # scp ACK byte for "OK".
     sys.stdout.buffer.write(ACK_OK)
     sys.stdout.buffer.flush()
 
@@ -65,11 +71,12 @@ def _expect_client_ok() -> None:
 
 
 def _token() -> str:
-    # URL-safe token, high entropy
+    # URL-safe token, high entropy (used as stored filename).
     return secrets.token_urlsafe(32)
 
 
 def _parse_original_command() -> str:
+    # sshd places the original command here for ForcedCommand.
     return os.environ.get("SSH_ORIGINAL_COMMAND", "").strip()
 
 
@@ -85,7 +92,7 @@ def _scp_flags(cmd: str) -> set[str]:
         logutil.warning(f"failed to parse SSH_ORIGINAL_COMMAND: {cmd!r}")
         return flags
     for p in parts:
-        if p.startswith("-") and not p.startswith("--") and len(p) > 1:
+        if p.startswith("-") and not p.startswith("--"):
             # Skip a lone "-" (shouldn't happen).
             if p == "-":
                 continue
@@ -94,13 +101,36 @@ def _scp_flags(cmd: str) -> set[str]:
     return flags
 
 
-def scp_receive_one(conf: Config) -> list[dict]:
+def _parse_c_record(line: bytes) -> tuple[str, int, str]:
+    # C<mode> <size> <filename>
+    try:
+        parts = line.decode("utf-8", errors="replace").strip().split(" ", 2)
+        mode = parts[0][1:]
+        size = int(parts[1])
+        filename = parts[2]
+        return mode, size, filename
+    except Exception as exc:
+        raise RuntimeError(f"bad C record: {line!r} ({exc})") from exc
+
+
+def _iter_file_chunks(size: int) -> Iterable[bytes]:
+    # Stream the file payload in bounded chunks.
+    remaining = size
+    while remaining > 0:
+        chunk = sys.stdin.buffer.read(min(MAX_CHUNK_SIZE, remaining))
+        if not chunk:
+            raise EOFError("unexpected EOF while reading file data")
+        remaining -= len(chunk)
+        yield chunk
+
+
+def scp_receive_one(conf: Config) -> list[dict[str, str | int]]:
     """
     Minimal scp -t receiver.
     Supports multiple files (C records) in one session.
     Returns receipts for each received file.
     """
-    receipts: list[dict] = []
+    receipts: list[dict[str, str | int]] = []
     logutil.debug("scp_receive_one: sending initial ACK")
     _send_ok()  # initial ack
 
@@ -118,13 +148,7 @@ def scp_receive_one(conf: Config) -> list[dict]:
 
         if line.startswith(b"C"):
             # C<mode> <size> <filename>\n
-            try:
-                parts = line.decode("utf-8", errors="replace").strip().split(" ", 2)
-                mode = parts[0][1:]
-                size = int(parts[1])
-                filename = parts[2]
-            except Exception as e:
-                raise RuntimeError(f"bad C record: {line!r} ({e})")
+            mode, size, filename = _parse_c_record(line)
 
             logutil.debug(
                 f"scp_receive_one: C record mode={mode} size={size} filename={filename!r}"
@@ -138,10 +162,7 @@ def scp_receive_one(conf: Config) -> list[dict]:
             h = hashlib.sha512()
             remaining = size
             with open(tmp_path, "wb") as f:
-                while remaining > 0:
-                    chunk = sys.stdin.buffer.read(min(1024 * 1024, remaining))
-                    if not chunk:
-                        raise EOFError("unexpected EOF while reading file data")
+                for chunk in _iter_file_chunks(size):
                     f.write(chunk)
                     h.update(chunk)
                     remaining -= len(chunk)
@@ -154,6 +175,7 @@ def scp_receive_one(conf: Config) -> list[dict]:
 
             os.replace(tmp_path, final_path)
             _send_ok()  # ack file received
+            logutil.debug(f"scp_receive_one: stored token={token} path={final_path}")
 
             created = utcnow()
             expires = created + timedelta(days=conf.ttl_days)
@@ -234,7 +256,7 @@ def scp_send_one(conf: Config, token: str) -> None:
 
     with open(path, "rb") as f:
         while True:
-            chunk = f.read(1024 * 1024)
+            chunk = f.read(MAX_CHUNK_SIZE)
             if not chunk:
                 break
             sys.stdout.buffer.write(chunk)
@@ -243,6 +265,7 @@ def scp_send_one(conf: Config, token: str) -> None:
 
     logutil.debug("scp_send_one: waiting for final client ACK")
     _expect_client_ok()
+    logutil.info(f"scp_send_one: completed token={token!r} bytes={size_bytes}")
 
 
 def main() -> None:
@@ -251,7 +274,7 @@ def main() -> None:
         sys.exit(2)
 
     mode = sys.argv[1]
-    conf = cfg()
+    conf = Config.from_env()
     cmd = _parse_original_command()
     flags = _scp_flags(cmd)
     logutil.info(
@@ -271,6 +294,7 @@ def main() -> None:
             sys.exit(1)
 
         # Receipt on stderr to avoid corrupting scp stdout protocol
+        logutil.info(f"upload complete files={len(receipts)}")
         for r in receipts:
             _stderr(
                 "RECEIPT\n"

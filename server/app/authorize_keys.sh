@@ -5,8 +5,6 @@ user="${1:-}"
 key_type="${2:-}"
 key_b64="${3:-}"
 
-keys_dir="${KEYS_DIR:-/keys}"
-
 if [ -f /etc/ssh/sshd_env ]; then
   # shellcheck disable=SC1091
   . /etc/ssh/sshd_env
@@ -44,30 +42,6 @@ log_warn() { log WARNING "$*"; }
 log_info() { log INFO "$*"; }
 log_debug() { log DEBUG "$*"; }
 log_verbose() { log VERBOSE "$*"; }
-
-user_keys_file() {
-  echo "/home/$1/.ssh/authorized_keys"
-}
-
-emit_file_if_present() {
-  f="$1"
-  if [ -f "$f" ] && [ -s "$f" ]; then
-    cat "$f"
-    return 0
-  fi
-  return 1
-}
-
-seed_from_pub_if_present() {
-  pub="$1"
-  dest="$2"
-  if [ -f "$pub" ] && [ -s "$pub" ]; then
-    install -m 600 "$pub" "$dest"
-    cat "$dest"
-    return 0
-  fi
-  return 1
-}
 
 clean_token() {
   # If sshd didn't expand a token, it will be passed literally like "%k".

@@ -1,11 +1,19 @@
+from __future__ import annotations
+
 import os
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from typing import Iterator
+
 import psycopg
+
 from app import logutil
+
+ExpiredRow = tuple[str, str]
 
 
 def _dsn() -> str:
+    # Read DB connection info from environment for container flexibility.
     host = os.environ["DB_HOST"]
     port = os.environ.get("DB_PORT", "5432")
     name = os.environ["DB_NAME"]
@@ -16,7 +24,7 @@ def _dsn() -> str:
 
 
 @contextmanager
-def conn():
+def conn() -> Iterator[psycopg.Connection]:
     logutil.verbose("db connecting")
     with psycopg.connect(_dsn()) as c:
         yield c
@@ -24,6 +32,7 @@ def conn():
 
 
 def init_db() -> None:
+    # Idempotent schema initialization.
     logutil.info("db init schema")
     with conn() as c:
         c.execute(
@@ -77,7 +86,9 @@ def insert_file(
     logutil.verbose("db insert complete")
 
 
-def get_file_by_token(token: str):
+def get_file_by_token(
+    token: str,
+) -> tuple[str, str, str, int, str, datetime, datetime] | None:
     logutil.debug(f"db lookup token={token}")
     with conn() as c:
         row = c.execute(
@@ -88,7 +99,7 @@ def get_file_by_token(token: str):
         return row
 
 
-def delete_expired(now: datetime) -> list[tuple[str, str]]:
+def delete_expired(now: datetime) -> list[ExpiredRow]:
     """
     Returns list of (token, stored_path) deleted from DB.
     """
@@ -104,4 +115,5 @@ def delete_expired(now: datetime) -> list[tuple[str, str]]:
 
 
 def utcnow() -> datetime:
+    # Centralized time source for easier testing/mocking.
     return datetime.now(timezone.utc)

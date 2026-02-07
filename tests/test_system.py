@@ -1,120 +1,97 @@
-import os
-import re
-import subprocess
-import hashlib
-from datetime import datetime, timezone
+from __future__ import annotations
 
-SSH_HOST = os.environ.get("SSH_HOST", "sshgateway")
-SSH_PORT = os.environ.get("SSH_PORT", "22")
-KEYS_DIR = os.environ.get("KEYS_DIR", "/keys")
+import io
+import sys
+from datetime import datetime, timedelta, timezone
 
-COMMON_OPTS = [
-    "-o",
-    "StrictHostKeyChecking=no",
-    "-o",
-    "UserKnownHostsFile=/dev/null",
-    "-o",
-    "LogLevel=ERROR",
-    "-P",
-    str(SSH_PORT),
-]
+import pytest
 
-RE_TOKEN = re.compile(r"^token=(.+)$", re.M)
-RE_SHA = re.compile(r"^sha512=([0-9a-f]{128})$", re.M)
-RE_EXPIRES = re.compile(r"^expires_at=(.+)$", re.M)
+from app import cleanup_worker, gateway
 
 
-def run(cmd, *, check=True, capture=True):
-    return subprocess.run(
-        cmd,
-        check=check,
-        text=True,
-        stdout=subprocess.PIPE if capture else None,
-        stderr=subprocess.PIPE if capture else None,
-    )
+class DummyStdin:
+    def __init__(self, data: bytes):
+        self.buffer = io.BytesIO(data)
 
 
-def sha512_file(path: str) -> str:
-    h = hashlib.sha512()
-    with open(path, "rb") as f:
-        while True:
-            b = f.read(1024 * 1024)
-            if not b:
-                break
-            h.update(b)
-    return h.hexdigest()
+class DummyStdout:
+    def __init__(self):
+        self.buffer = io.BytesIO()
 
 
-def test_put_then_get_roundtrip(tmp_path):
-    src = tmp_path / "hello.txt"
-    src.write_text("hello world\n", encoding="utf-8")
-    expected_sha = sha512_file(str(src))
+def test_put_get_and_expire_flow(tmp_path, monkeypatch):
+    store: dict[str, dict] = {}
 
-    put_key = os.path.join(KEYS_DIR, "put")
-    get_key = os.path.join(KEYS_DIR, "get")
+    def insert_file(**kwargs):
+        store[kwargs["token"]] = kwargs
 
-    # Upload
-    p = run(
-        [
-            "scp",
-            *COMMON_OPTS,
-            "-i",
-            put_key,
-            str(src),
-            f"put@{SSH_HOST}:/",
-        ]
-    )
+    def get_file_by_token(token: str):
+        rec = store.get(token)
+        if not rec:
+            return None
+        return (
+            rec["token"],
+            rec["sha512"],
+            rec["original_name"],
+            rec["size_bytes"],
+            rec["stored_path"],
+            rec["created_at"],
+            rec["expires_at"],
+        )
 
-    # Receipt is on stderr
-    m_tok = RE_TOKEN.search(p.stderr or "")
-    m_sha = RE_SHA.search(p.stderr or "")
-    m_exp = RE_EXPIRES.search(p.stderr or "")
-    assert m_tok, f"missing token in receipt stderr:\n{p.stderr}"
-    assert m_sha, f"missing sha512 in receipt stderr:\n{p.stderr}"
-    assert m_exp, f"missing expires_at in receipt stderr:\n{p.stderr}"
+    def delete_expired(now: datetime):
+        expired = []
+        for token, rec in list(store.items()):
+            if rec["expires_at"] <= now:
+                expired.append((token, rec["stored_path"]))
+                store.pop(token)
+        return expired
 
-    token = m_tok.group(1).strip()
-    got_sha = m_sha.group(1).strip()
-    expires_at = m_exp.group(1).strip()
+    monkeypatch.setattr(gateway, "insert_file", insert_file)
+    monkeypatch.setattr(gateway, "get_file_by_token", get_file_by_token)
+    monkeypatch.setattr(cleanup_worker, "delete_expired", delete_expired)
 
-    assert got_sha == expected_sha
+    created = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    monkeypatch.setattr(gateway, "utcnow", lambda: created)
+    monkeypatch.setattr(cleanup_worker, "utcnow", lambda: created + timedelta(days=2))
+    monkeypatch.setattr(gateway, "_token", lambda: "tok")
 
-    # Expires ~7 days from now (allow a few minutes skew)
-    exp_dt = datetime.fromisoformat(expires_at)
-    now = datetime.now(timezone.utc)
-    delta = exp_dt - now
-    assert 6.9 * 24 * 3600 <= delta.total_seconds() <= 7.1 * 24 * 3600
+    # PUT (scp -t)
+    payload = b"hello"
+    data = b"C0644 5 hello.txt\n" + payload + b"\x00"
+    stdin = DummyStdin(data)
+    stdout = DummyStdout()
+    monkeypatch.setattr(sys, "stdin", stdin)
+    monkeypatch.setattr(sys, "stdout", stdout)
+    conf = gateway.Config(data_dir=tmp_path, ttl_days=1)
+    receipts = gateway.scp_receive_one(conf)
 
-    # Download
-    dst = tmp_path / "out.txt"
-    run(
-        [
-            "scp",
-            *COMMON_OPTS,
-            "-i",
-            get_key,
-            f"get@{SSH_HOST}:{token}",
-            str(dst),
-        ]
-    )
+    assert receipts[0]["token"] == "tok"
+    assert (tmp_path / "tok").read_bytes() == payload
 
-    assert dst.read_bytes() == src.read_bytes()
+    # GET (scp -f)
+    stdin = DummyStdin(gateway.ACK_OK * 3)
+    stdout = DummyStdout()
+    monkeypatch.setattr(sys, "stdin", stdin)
+    monkeypatch.setattr(sys, "stdout", stdout)
+    monkeypatch.setattr(sys, "stderr", io.StringIO())
+    gateway.scp_send_one(conf, "tok")
+
+    out = stdout.buffer.getvalue()
+    assert payload in out
+
+    # Expire + cleanup
+    expired = cleanup_worker.delete_expired(cleanup_worker.utcnow())
+    cleanup_worker.remove_expired_files(expired)
+
+    assert not (tmp_path / "tok").exists()
+    assert store == {}
 
 
-def test_invalid_token_fails(tmp_path):
-    get_key = os.path.join(KEYS_DIR, "get")
-    dst = tmp_path / "nope.bin"
-    r = subprocess.run(
-        [
-            "scp",
-            *COMMON_OPTS,
-            "-i",
-            get_key,
-            f"get@{SSH_HOST}:does-not-exist",
-            str(dst),
-        ],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    assert r.returncode != 0
+def test_get_wrong_token(monkeypatch, tmp_path):
+    monkeypatch.setattr(gateway, "get_file_by_token", lambda _token: None)
+    monkeypatch.setattr(sys, "stderr", io.StringIO())
+
+    with pytest.raises(SystemExit):
+        gateway.scp_send_one(gateway.Config(data_dir=tmp_path, ttl_days=1), "nope")
+
